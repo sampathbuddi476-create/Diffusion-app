@@ -1,0 +1,6 @@
+{
+  "name": "Titan Anime",
+  "description": "Video stylization client that sends video clips to a remote Colab GPU backend and plays/saves stylized anime MP4 results.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
