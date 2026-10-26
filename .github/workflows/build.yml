@@ -74,7 +74,7 @@ jobs:
                 }
               }
             ],
-            "configuration_version": "1"
+            "configuration_version": "1.1"
           }
           EOF
           mkdir -p app
