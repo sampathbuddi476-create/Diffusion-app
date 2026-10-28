@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Movie
@@ -25,6 +26,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -58,6 +60,7 @@ fun ResultPlayerCard(
     isSaving: Boolean,
     isSaved: Boolean,
     onSaveToGalleryClick: () -> Unit,
+    onCloseClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -100,14 +103,28 @@ fun ResultPlayerCard(
                     )
                 }
 
-                val dateStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(clip.createdAt))
-                Text(
-                    text = dateStr,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        color = DimText,
-                        fontSize = 12.sp
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val dateStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(clip.createdAt))
+                    Text(
+                        text = dateStr,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = DimText,
+                            fontSize = 12.sp
+                        )
                     )
-                )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    IconButton(
+                        onClick = onCloseClick,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close Player",
+                            tint = DimText,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(14.dp))
@@ -121,7 +138,8 @@ fun ResultPlayerCard(
                 ) {
                     VideoPlayerView(
                         videoFile = videoFile,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        onCloseClick = onCloseClick
                     )
                 }
             } else {

@@ -455,7 +455,10 @@ class TitanAnimeViewModel(application: Application) : AndroidViewModel(applicati
                             Pair("Uploading clip... $percent%", 0.2f + (percent / 100f * 0.3f))
                         }
                         is StylizeProgress.RenderingOnGpu -> {
-                            Pair("Colab GPU rendering anime frames...", 0.65f)
+                            val sec = progress.elapsedSeconds
+                            val desc = if (sec > 0) "GPU rendering anime frames (${sec}s elapsed)..." else "Colab GPU rendering anime frames..."
+                            val progressEstimate = (0.5f + (sec / 120f * 0.35f)).coerceAtMost(0.85f)
+                            Pair(desc, progressEstimate)
                         }
                         is StylizeProgress.Downloading -> {
                             val percent = if (progress.progressPercent >= 0) "${progress.progressPercent}%" else "streaming"
@@ -566,7 +569,7 @@ class TitanAnimeViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun setActiveResultClip(clip: StylizedClip) {
+    fun setActiveResultClip(clip: StylizedClip?) {
         _uiState.update {
             it.copy(
                 activeResultClip = clip,

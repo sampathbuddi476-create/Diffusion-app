@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Download
@@ -203,22 +204,27 @@ fun StylizeProgressSection(
 
                             OutlinedButton(
                                 onClick = onCancelClick,
-                                shape = RoundedCornerShape(8.dp),
-                                border = CardDefaults.outlinedCardBorder().copy(
-                                    brush = androidx.compose.ui.graphics.SolidColor(OutlineDark)
-                                )
+                                shape = RoundedCornerShape(10.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.5.dp, AnimeCrimson),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = AnimeCrimson.copy(alpha = 0.1f),
+                                    contentColor = AnimeCrimson
+                                ),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier.testTag("cancel_stylize_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Cancel,
+                                    imageVector = Icons.Default.Close,
                                     contentDescription = "Cancel",
-                                    tint = DimText,
+                                    tint = AnimeCrimson,
                                     modifier = Modifier.size(16.dp)
                                 )
-                                Spacer(modifier = Modifier.width(4.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
                                     text = "Cancel",
-                                    color = DimText,
-                                    fontSize = 12.sp
+                                    color = AnimeCrimson,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                         }

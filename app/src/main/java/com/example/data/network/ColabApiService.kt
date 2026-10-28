@@ -2,7 +2,11 @@ package com.example.data.network
 
 import android.content.Context
 import com.example.util.AppError
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -11,6 +15,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okio.BufferedSink
+import retrofit2.Retrofit
+import retrofit2.converter.moshi.MoshiConverterFactory
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -23,7 +29,7 @@ import javax.net.ssl.SSLException
 sealed class StylizeProgress {
     data class Compressing(val progressPercent: Int) : StylizeProgress()
     data class Uploading(val progressPercent: Int, val bytesWritten: Long, val totalBytes: Long) : StylizeProgress()
-    object RenderingOnGpu : StylizeProgress()
+    data class RenderingOnGpu(val pollCount: Int = 0, val elapsedSeconds: Int = 0) : StylizeProgress()
     data class Downloading(val progressPercent: Int, val bytesRead: Long, val totalBytes: Long) : StylizeProgress()
     object Completed : StylizeProgress()
 }
@@ -38,14 +44,18 @@ data class ServerHealth(
 
 class ColabApiService {
 
-    private val client: OkHttpClient = OkHttpClient.Builder()
+    private val moshi: Moshi = Moshi.Builder()
+        .addLast(KotlinJsonAdapterFactory())
+        .build()
+
+    private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(300, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(120, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
-    // Short timeout client specifically for periodic background health checks to avoid hanging
+    // Short timeout client specifically for periodic background health checks
     private val healthClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
@@ -53,6 +63,19 @@ class ColabApiService {
         .build()
 
     private var activeCall: Call? = null
+    @Volatile
+    private var isCancelled = false
+
+    private fun buildRetrofitApi(baseUrl: String): TitanAnimeApi {
+        val cleanUrl = sanitizeUrl(baseUrl)
+        val formattedBaseUrl = if (cleanUrl.endsWith("/")) cleanUrl else "$cleanUrl/"
+        return Retrofit.Builder()
+            .baseUrl(formattedBaseUrl)
+            .client(okHttpClient)
+            .addConverterFactory(MoshiConverterFactory.create(moshi))
+            .build()
+            .create(TitanAnimeApi::class.java)
+    }
 
     /**
      * Cleans and formats the base URL (ensures http/https and trims trailing slashes)
@@ -72,7 +95,7 @@ class ColabApiService {
     }
 
     /**
-     * GET {BASE_URL}/ -> Verifies connection status with comprehensive error handling
+     * GET {BASE_URL}/ -> Verifies connection status
      */
     suspend fun checkServerHealth(baseUrl: String, isBackgroundPoll: Boolean = false): ServerHealth = withContext(Dispatchers.IO) {
         val cleanUrl = sanitizeUrl(baseUrl)
@@ -99,7 +122,7 @@ class ColabApiService {
             )
         }
 
-        val targetClient = if (isBackgroundPoll) healthClient else client
+        val targetClient = if (isBackgroundPoll) healthClient else okHttpClient
         val startTime = System.currentTimeMillis()
 
         try {
@@ -159,8 +182,10 @@ class ColabApiService {
     }
 
     /**
-     * POST {BASE_URL}/stylize -> Uploads source video as multipart form-data (field name: video).
-     * Streams back the completed MP4 binary directly to context.cacheDir with full error handling.
+     * Executes the 3-step asynchronous stylization sequence:
+     * 1. UPLOAD: POST multipart to /stylize/start -> receives {"job_id": "...", "status": "processing"}
+     * 2. POLL: GET /stylize/status/{job_id} every 5 seconds until "completed" or "failed"
+     * 3. DOWNLOAD: GET /stylize/download/{job_id} -> streams video/mp4 binary to device
      */
     suspend fun stylizeVideo(
         context: Context,
@@ -169,6 +194,7 @@ class ColabApiService {
         mimeType: String = "video/mp4",
         onProgress: (StylizeProgress) -> Unit
     ): Result<File> = withContext(Dispatchers.IO) {
+        isCancelled = false
         val cleanUrl = sanitizeUrl(baseUrl)
         if (cleanUrl.isBlank()) {
             return@withContext Result.failure(AppError.InvalidUrl())
@@ -183,8 +209,10 @@ class ColabApiService {
         val totalFileLength = videoFile.length()
         val mediaType = mimeType.toMediaTypeOrNull()
 
-        // Create file request body with progress tracking
-        val baseFileBody = object : RequestBody() {
+        // -------------------------------------------------------------
+        // STEP 1: UPLOAD to /stylize/start
+        // -------------------------------------------------------------
+        val fileRequestBody = object : RequestBody() {
             override fun contentType() = mediaType
             override fun contentLength() = totalFileLength
 
@@ -195,6 +223,7 @@ class ColabApiService {
                     var totalWritten = 0L
 
                     while (input.read(buffer).also { read = it } != -1) {
+                        if (isCancelled) throw IOException("Upload cancelled by user")
                         sink.write(buffer, 0, read)
                         totalWritten += read
                         val percent = if (totalFileLength > 0) {
@@ -213,127 +242,191 @@ class ColabApiService {
             }
         }
 
-        val multipartBody = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addFormDataPart(
-                name = "video",
-                filename = videoFile.name,
-                body = baseFileBody
-            )
-            .build()
+        val videoPart = MultipartBody.Part.createFormData(
+            name = "video",
+            filename = videoFile.name,
+            body = fileRequestBody
+        )
 
-        val request = try {
-            Request.Builder()
-                .url("$cleanUrl/stylize")
-                .header("User-Agent", "TitanAnime-Android/1.0")
-                .post(multipartBody)
-                .build()
+        val api = try {
+            buildRetrofitApi(cleanUrl)
         } catch (e: Exception) {
-            return@withContext Result.failure(AppError.InvalidUrl("Invalid stylize endpoint URL: ${e.message}"))
+            return@withContext Result.failure(AppError.InvalidUrl("Invalid server URL: ${e.message}"))
         }
 
-        val call = client.newCall(request)
-        activeCall = call
+        val jobId: String = try {
+            val startResponse = api.startJob(videoPart)
+            if (!startResponse.isSuccessful) {
+                val errorBody = startResponse.errorBody()?.string()?.take(200) ?: "HTTP ${startResponse.code()}"
+                return@withContext Result.failure(
+                    AppError.ServerExecutionFailed(
+                        statusCode = startResponse.code(),
+                        userMessage = "Failed to start job (HTTP ${startResponse.code()}): $errorBody"
+                    )
+                )
+            }
 
+            val body = startResponse.body()
+                ?: return@withContext Result.failure(AppError.ServerExecutionFailed(500, "Empty response from /stylize/start"))
+
+            body.jobId
+        } catch (e: Exception) {
+            if (isCancelled) return@withContext Result.failure(AppError.OperationCancelled("Stylization cancelled by user."))
+            return@withContext Result.failure(AppError.fromThrowable(e, "Upload to /stylize/start failed."))
+        }
+
+        if (isCancelled) {
+            return@withContext Result.failure(AppError.OperationCancelled("Stylization cancelled by user."))
+        }
+
+        // -------------------------------------------------------------
+        // STEP 2: POLL /stylize/status/{job_id} every 5 seconds
+        // -------------------------------------------------------------
+        var pollCounter = 0
+        var isJobReadyForDownload = false
+
+        onProgress(StylizeProgress.RenderingOnGpu(pollCount = 0, elapsedSeconds = 0))
+
+        while (isActive && !isCancelled) {
+            delay(5000L)
+            if (isCancelled) break
+            pollCounter++
+            val elapsedSeconds = pollCounter * 5
+
+            try {
+                val statusResponse = api.getJobStatus(jobId)
+                if (!statusResponse.isSuccessful) {
+                    val code = statusResponse.code()
+                    if (code == 404) {
+                        return@withContext Result.failure(
+                            AppError.ServerExecutionFailed(404, "Job $jobId not found on server.")
+                        )
+                    }
+                    // For transient gateway/tunnel errors, continue polling up to max duration
+                    continue
+                }
+
+                val statusBody = statusResponse.body() ?: continue
+                when (statusBody.status.lowercase()) {
+                    "processing" -> {
+                        onProgress(
+                            StylizeProgress.RenderingOnGpu(
+                                pollCount = pollCounter,
+                                elapsedSeconds = elapsedSeconds
+                            )
+                        )
+                    }
+                    "completed" -> {
+                        isJobReadyForDownload = true
+                        break
+                    }
+                    "failed" -> {
+                        val failureMsg = statusBody.message ?: "Job failed on remote Colab GPU"
+                        return@withContext Result.failure(
+                            AppError.ServerExecutionFailed(
+                                statusCode = 500,
+                                userMessage = "GPU stylization failed: $failureMsg"
+                            )
+                        )
+                    }
+                    else -> {
+                        onProgress(
+                            StylizeProgress.RenderingOnGpu(
+                                pollCount = pollCounter,
+                                elapsedSeconds = elapsedSeconds
+                            )
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                if (isCancelled) break
+                // Keep polling if transient connection glitch
+            }
+
+            // Cap at 15 minutes of polling to avoid runaway loop
+            if (elapsedSeconds >= 900) {
+                return@withContext Result.failure(
+                    AppError.Timeout("Job timed out after 15 minutes. Server did not finish processing.")
+                )
+            }
+        }
+
+        if (isCancelled) {
+            return@withContext Result.failure(AppError.OperationCancelled("Stylization cancelled by user."))
+        }
+
+        if (!isJobReadyForDownload) {
+            return@withContext Result.failure(AppError.ServerExecutionFailed(500, "Processing did not complete."))
+        }
+
+        // -------------------------------------------------------------
+        // STEP 3: DOWNLOAD /stylize/download/{job_id}
+        // -------------------------------------------------------------
         val timestamp = System.currentTimeMillis()
         val outputFile = File(context.cacheDir, "stylized_anime_$timestamp.mp4")
 
         try {
-            // Signal transition to GPU rendering once request has finished uploading
-            val response = call.execute()
-            onProgress(StylizeProgress.RenderingOnGpu)
-
-            if (!response.isSuccessful) {
-                val errorMsg = try {
-                    response.body?.string()?.take(300) ?: "HTTP ${response.code}"
-                } catch (_: Exception) {
-                    "HTTP ${response.code}"
-                }
-
-                val userMessage = when (response.code) {
-                    404 -> "Endpoint /stylize not found (HTTP 404). Check backend script route."
-                    413 -> "Payload too large (HTTP 413). Try compressing video first."
-                    500, 502, 503 -> "Colab GPU server error (HTTP ${response.code}): $errorMsg"
-                    else -> "Stylization failed (HTTP ${response.code}): $errorMsg"
-                }
-
+            val downloadResponse = api.downloadStylizedVideo(jobId)
+            if (!downloadResponse.isSuccessful) {
+                val code = downloadResponse.code()
                 return@withContext Result.failure(
-                    AppError.ServerExecutionFailed(statusCode = response.code, userMessage = userMessage)
+                    AppError.DownloadFailed("Failed to download result (HTTP $code)")
                 )
             }
 
-            val responseBody = response.body
-                ?: return@withContext Result.failure(AppError.DownloadFailed("Server returned an empty response body."))
+            val body = downloadResponse.body()
+                ?: return@withContext Result.failure(AppError.DownloadFailed("Empty download stream from server."))
 
-            val totalDownloadLength = responseBody.contentLength()
+            val totalDownloadLength = body.contentLength()
 
-            // Stream response directly to cache file
-            try {
-                responseBody.byteStream().use { inputStream ->
-                    FileOutputStream(outputFile).use { outputStream ->
-                        val buffer = ByteArray(16 * 1024)
-                        var bytesRead: Int
-                        var totalRead = 0L
+            body.byteStream().use { inputStream ->
+                FileOutputStream(outputFile).use { outputStream ->
+                    val buffer = ByteArray(16 * 1024)
+                    var bytesRead: Int
+                    var totalRead = 0L
 
-                        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                            outputStream.write(buffer, 0, bytesRead)
-                            totalRead += bytesRead
+                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                        if (isCancelled) throw IOException("Download cancelled by user")
+                        outputStream.write(buffer, 0, bytesRead)
+                        totalRead += bytesRead
 
-                            val percent = if (totalDownloadLength > 0) {
-                                ((totalRead * 100) / totalDownloadLength).toInt().coerceIn(0, 100)
-                            } else -1
+                        val percent = if (totalDownloadLength > 0) {
+                            ((totalRead * 100) / totalDownloadLength).toInt().coerceIn(0, 100)
+                        } else -1
 
-                            onProgress(
-                                StylizeProgress.Downloading(
-                                    progressPercent = percent,
-                                    bytesRead = totalRead,
-                                    totalBytes = totalDownloadLength
-                                )
+                        onProgress(
+                            StylizeProgress.Downloading(
+                                progressPercent = percent,
+                                bytesRead = totalRead,
+                                totalBytes = totalDownloadLength
                             )
-                        }
-                        outputStream.flush()
+                        )
                     }
+                    outputStream.flush()
                 }
-            } catch (e: Exception) {
-                if (outputFile.exists()) outputFile.delete()
-                return@withContext Result.failure(
-                    AppError.DownloadFailed("Interrupted while downloading MP4 stream: ${e.localizedMessage}")
-                )
             }
 
             if (!outputFile.exists() || outputFile.length() == 0L) {
                 if (outputFile.exists()) outputFile.delete()
                 return@withContext Result.failure(
-                    AppError.DownloadFailed("Downloaded video file is empty or corrupted.")
+                    AppError.DownloadFailed("Downloaded video file is empty.")
                 )
             }
 
             onProgress(StylizeProgress.Completed)
             Result.success(outputFile)
-        } catch (e: SocketTimeoutException) {
-            if (outputFile.exists()) outputFile.delete()
-            Result.failure(
-                AppError.Timeout("Operation timed out after 300s. The Colab GPU backend took too long to complete rendering.")
-            )
-        } catch (e: UnknownHostException) {
-            if (outputFile.exists()) outputFile.delete()
-            Result.failure(
-                AppError.ServerUnreachable("Host unreachable. Tunnel may have expired or disconnected.", e)
-            )
-        } catch (e: ConnectException) {
-            if (outputFile.exists()) outputFile.delete()
-            Result.failure(
-                AppError.ServerUnreachable("Connection lost. Remote Colab notebook stopped responding.", e)
-            )
         } catch (e: Exception) {
             if (outputFile.exists()) outputFile.delete()
-            Result.failure(AppError.fromThrowable(e, "Stylization request failed."))
-        } finally {
-            activeCall = null
+            if (isCancelled) {
+                Result.failure(AppError.OperationCancelled("Download cancelled by user."))
+            } else {
+                Result.failure(AppError.DownloadFailed("Failed to stream video: ${e.localizedMessage}"))
+            }
         }
     }
 
     fun cancelActiveRequest() {
+        isCancelled = true
         activeCall?.cancel()
         activeCall = null
     }

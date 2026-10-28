@@ -1,6 +1,10 @@
 name: Build APK
 
 on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -41,7 +45,7 @@ jobs:
       - name: Create .env Configuration
         run: |
           cat << 'EOF' > .env
-          GEMINI_API_KEY=AQ.Ab8RN6JqvnjifV5wz4M0-2Wa3vUAEPgJM85vpSP8Zbl24vIvAQ
+          GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY || 'placeholder_api_key' }}
           EOF
 
       - name: Create Valid google-services.json
@@ -64,7 +68,7 @@ jobs:
                 "oauth_client": [],
                 "api_key": [
                   {
-                    "current_key": "AQ.Ab8RN6JqvnjifV5wz4M0-2Wa3vUAEPgJM85vpSP8Zbl24vIvAQ"
+                    "current_key": "dummy_api_key_for_workflow_build"
                   }
                 ],
                 "services": {

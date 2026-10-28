@@ -61,6 +61,10 @@ sealed class AppError(
         override val cause: Throwable? = null
     ) : AppError(userMessage, cause)
 
+    data class OperationCancelled(
+        override val userMessage: String = "Operation was cancelled."
+    ) : AppError(userMessage)
+
     companion object {
         fun fromThrowable(t: Throwable, defaultMessage: String = "Operation failed"): AppError {
             if (t is AppError) return t

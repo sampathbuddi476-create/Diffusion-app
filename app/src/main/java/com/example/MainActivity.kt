@@ -6,9 +6,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -24,10 +31,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.HelpOutline
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,21 +44,22 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -78,7 +85,10 @@ import com.example.ui.theme.OutlineDark
 import com.example.ui.theme.StatusGreen
 import com.example.ui.theme.StatusGrey
 import com.example.ui.theme.TitanAnimeTheme
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -90,8 +100,112 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             TitanAnimeTheme {
-                TitanAnimeScreen(viewModel = viewModel)
+                var showSplash by rememberSaveable { mutableStateOf(true) }
+
+                Crossfade(
+                    targetState = showSplash,
+                    animationSpec = tween(durationMillis = 400),
+                    label = "SplashCrossfade"
+                ) { isSplash ->
+                    if (isSplash) {
+                        SplashScreen(
+                            onSplashFinished = { showSplash = false }
+                        )
+                    } else {
+                        TitanAnimeScreen(viewModel = viewModel)
+                    }
+                }
             }
+        }
+    }
+}
+
+/**
+ * Premium Cold Boot Splash Screen:
+ * Displays centered stylized logo with smooth zoom/fade animation for ~1.8 seconds.
+ */
+@Composable
+fun SplashScreen(
+    onSplashFinished: () -> Unit
+) {
+    val scale = remember { Animatable(0.75f) }
+    val alpha = remember { Animatable(0f) }
+
+    LaunchedEffect(Unit) {
+        coroutineScope {
+            launch {
+                scale.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(durationMillis = 700, easing = FastOutSlowInEasing)
+                )
+            }
+            launch {
+                alpha.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(durationMillis = 600)
+                )
+            }
+        }
+        delay(1500L) // Hold splash screen for 1.5 - 2s total
+        onSplashFinished()
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(DarkCharcoal)
+            .testTag("splash_screen"),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.graphicsLayer(
+                scaleX = scale.value,
+                scaleY = scale.value,
+                alpha = alpha.value
+            )
+        ) {
+            // Real app logo emblem
+            Image(
+                painter = painterResource(id = R.drawable.ic_titan_logo),
+                contentDescription = "Titan Anime Logo",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(92.dp)
+                    .clip(RoundedCornerShape(26.dp))
+                    .border(2.dp, AnimeCrimson.copy(alpha = 0.6f), RoundedCornerShape(26.dp))
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Text(
+                text = "TITAN ANIME",
+                style = MaterialTheme.typography.headlineMedium.copy(
+                    fontWeight = FontWeight.Black,
+                    color = LightText,
+                    letterSpacing = 3.sp
+                )
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = "Neural Generative Video Studio",
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    color = AnimeCrimson,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 1.sp
+                )
+            )
+
+            Spacer(modifier = Modifier.height(48.dp))
+
+            CircularProgressIndicator(
+                color = AnimeCrimson,
+                strokeWidth = 2.5.dp,
+                modifier = Modifier.size(28.dp)
+            )
         }
     }
 }
@@ -150,21 +264,15 @@ fun TitanAnimeScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        // Brand emblem badge
-                        Box(
+                        // Real app logo icon
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_titan_logo),
+                            contentDescription = "Titan Anime Logo",
+                            contentScale = ContentScale.Crop,
                             modifier = Modifier
-                                .size(28.dp)
+                                .size(36.dp)
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(AnimeCrimson),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "T",
-                                color = Color.White,
-                                fontWeight = FontWeight.Black,
-                                fontSize = 16.sp
-                            )
-                        }
+                        )
 
                         Spacer(modifier = Modifier.width(10.dp))
 
@@ -179,7 +287,6 @@ fun TitanAnimeScreen(
 
                         Spacer(modifier = Modifier.width(10.dp))
 
-                        // Status dot indicator updated in real-time by periodic background polling
                         TopBarStatusIndicator(isOnline = isServerConnected)
                     }
                 },
@@ -189,7 +296,7 @@ fun TitanAnimeScreen(
                         modifier = Modifier.testTag("help_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.HelpOutline,
+                            imageVector = Icons.AutoMirrored.Filled.HelpOutline,
                             contentDescription = "Help & Colab API Info",
                             tint = MediumText
                         )
@@ -209,7 +316,7 @@ fun TitanAnimeScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 1. Server URL Card (with configurable background health polling)
+            // 1. Server URL Card
             item {
                 ServerConfigCard(
                     serverUrl = uiState.serverUrl,
@@ -221,7 +328,7 @@ fun TitanAnimeScreen(
                 )
             }
 
-            // 2. Video Picker Card (with client-side video compression options)
+            // 2. Video Picker Card
             item {
                 VideoPickerCard(
                     selectedVideo = uiState.selectedVideo,
@@ -233,7 +340,7 @@ fun TitanAnimeScreen(
                 )
             }
 
-            // 3. Convert CTA & Progress Section (showing compression, upload, GPU, and download)
+            // 3. Convert CTA & Progress Section with upgraded Cancel button
             item {
                 StylizeProgressSection(
                     isServerOnline = isServerConnected,
@@ -244,14 +351,15 @@ fun TitanAnimeScreen(
                 )
             }
 
-            // 4. Result Card (Media3 ExoPlayer + Save to Gallery button)
+            // 4. Result Card with Advanced Offline Video Player and Close button
             if (uiState.activeResultClip != null) {
                 item {
                     ResultPlayerCard(
                         clip = uiState.activeResultClip!!,
                         isSaving = uiState.isSavingToGallery,
                         isSaved = uiState.isGallerySaved,
-                        onSaveToGalleryClick = { viewModel.saveActiveClipToGallery() }
+                        onSaveToGalleryClick = { viewModel.saveActiveClipToGallery() },
+                        onCloseClick = { viewModel.setActiveResultClip(null) }
                     )
                 }
             }
